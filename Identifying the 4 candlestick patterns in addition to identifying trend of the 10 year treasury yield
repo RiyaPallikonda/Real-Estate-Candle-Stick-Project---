@@ -1,0 +1,111 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
+# Define the ticker symbols
+vnq_ticker = 'VNQ'
+tnx_ticker = '^TNX'  # 10-Year Treasury Yield
+
+# Retrieve historical data for VNQ and TNX
+vnq_data = yf.download(vnq_ticker, start='2008-01-01', end='2024-11-01')
+tnx_data = yf.download(tnx_ticker, start='2008-01-01', end='2024-11-01')
+
+# Define the candlestick patterns
+def hammer(data):
+    return (data['Close'] > data['Open']) & ((data['Close'] - data['Open']) < 0.3 * (data['High'] - data['Low'])) & \
+           ((data['Low'] < data['Open']) & (data['Low'] < data['Close'])) & ((data['High'] - data['Close']) <= 0.3 * (data['High'] - data['Low']))
+
+def hanging_man(data):
+    return (data['Close'] < data['Open']) & ((data['Open'] - data['Close']) < 0.3 * (data['High'] - data['Low'])) & \
+           ((data['Low'] < data['Open']) & (data['Low'] < data['Close'])) & ((data['High'] - data['Open']) <= 0.3 * (data['High'] - data['Low']))
+
+def bearish_engulfing(data):
+    return (data['Close'] < data['Open']) & (data['Close'] < data['Open'].shift(1)) & (data['Open'] > data['Close'].shift(1))
+
+def bullish_engulfing(data):
+    return (data['Close'] > data['Open']) & (data['Close'] > data['Open'].shift(1)) & (data['Open'] < data['Close'].shift(1))
+
+# Apply the candlestick patterns to the VNQ data
+vnq_data['Hammer'] = hammer(vnq_data)
+vnq_data['Hanging_Man'] = hanging_man(vnq_data)
+vnq_data['Bearish_Engulfing'] = bearish_engulfing(vnq_data)
+vnq_data['Bullish_Engulfing'] = bullish_engulfing(vnq_data)
+
+# Check VNQ performance after the pattern
+vnq_data['VNQ_Performance'] = vnq_data['Close'].pct_change().shift(-1)
+
+# Align TNX data with VNQ by reindexing
+tnx_data = tnx_data.reindex(vnq_data.index)
+
+# Calculate the trend of the TNX market using a Simple Moving Average (SMA)
+tnx_data['TNX_SMA_50'] = tnx_data['Close'].rolling(window=50).mean()  # 50-day SMA
+
+# Analyze patterns, interest rates, and accuracy
+results = []
+
+for index, row in vnq_data.iterrows():
+    # Check if a pattern exists
+    patterns = []
+    if row['Hammer'].any():
+        patterns.append('Hammer')
+    if row['Hanging_Man'].any():
+        patterns.append('Hanging Man')
+    if row['Bearish_Engulfing'].any():
+        patterns.append('Bearish Engulfing')
+    if row['Bullish_Engulfing'].any():
+        patterns.append('Bullish Engulfing')
+
+    # If any pattern exists, analyze
+    if patterns:
+        for pattern in patterns:
+            # VNQ's predicted movement (based on the pattern's typical implication)
+            if pattern in ['Bullish Engulfing', 'Hammer']:
+                vnq_prediction = 'Rising'
+            elif pattern in ['Bearish Engulfing', 'Hanging Man']:
+                vnq_prediction = 'Falling'
+            else:
+                vnq_prediction = 'Neutral'
+
+            # Actual VNQ performance
+            vnq_actual = 'Rising' if row['VNQ_Performance'].item() > 0 else 'Falling' if row['VNQ_Performance'].item() < 0 else 'Neutral'
+
+            # TNX interest rate on the pattern day
+            tnx_rate = tnx_data.loc[index, 'Close'] if index in tnx_data.index else np.nan
+
+            # TNX trend (whether it's rising or falling based on SMA)
+            if not np.isnan(tnx_rate.item()) and not np.isnan(tnx_data.loc[index, 'TNX_SMA_50'].item()):
+                tnx_trend = 'Rising' if tnx_rate.item() > tnx_data.loc[index, 'TNX_SMA_50'].item() else 'Falling'
+            else:
+                tnx_trend = 'N/A'  # In case of NaN values
+
+            # VNQ Open and Close prices
+            vnq_open = row['Open']
+            vnq_close = row['Close']
+
+            # Record the results
+            results.append({
+                'Date': index,
+                'Pattern': pattern,
+                'VNQ_Prediction': vnq_prediction,
+                'VNQ_Actual': vnq_actual,
+                'VNQ_Open': vnq_open,
+                'VNQ_Close': vnq_close,
+                'TNX_Interest_Rate': tnx_rate,
+                'TNX_Trend': tnx_trend
+            })
+
+# Convert results to a DataFrame
+results_df = pd.DataFrame(results)
+
+# Filter for days where prediction matches actual movement
+correct_predictions = results_df[results_df['VNQ_Prediction'] == results_df['VNQ_Actual']]
+
+# Display results
+print("All Results:")
+print(results_df)
+print("\nCorrect Predictions:")
+print(correct_predictions)
+
+# Save results to a CSV file for further analysis
+results_df.to_csv('candlestick_interest_rate_analysis_with_trend.csv', index=False)
+correct_predictions.to_csv('correct_predictions_analysis_with_trend.csv', index=False)
