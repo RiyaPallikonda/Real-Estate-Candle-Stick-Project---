@@ -1,0 +1,111 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Define the ticker symbols
+vnq_ticker = 'VNQ'
+tnx_ticker = '^TNX'  # 10-Year Treasury Yield
+
+# Retrieve historical data for VNQ and TNX
+vnq_data = yf.download(vnq_ticker, start='2008-01-01', end='2024-11-01')
+tnx_data = yf.download(tnx_ticker, start='2008-01-01', end='2024-11-01')
+
+# Flatten MultiIndex columns in TNX if present
+if isinstance(tnx_data.columns, pd.MultiIndex):
+    tnx_data.columns = [col[0] for col in tnx_data.columns]
+
+# Ensure TNX has a valid price column ('Close' or 'Adj Close')
+if 'Close' in tnx_data.columns:
+    tnx_data['Price'] = tnx_data['Close']
+elif 'Adj Close' in tnx_data.columns:
+    print("Warning: 'Close' not found in TNX data. Using 'Adj Close' instead.")
+    tnx_data['Price'] = tnx_data['Adj Close']
+else:
+    raise ValueError("Error: TNX data does not contain 'Close' or 'Adj Close'. Check data availability.")
+
+# Compute 50-day moving average for TNX
+tnx_data['TNX_SMA_50'] = tnx_data['Price'].rolling(window=50, min_periods=1).mean()
+
+# Determine TNX Trend (Up or Down)
+tnx_data['TNX_Trend'] = np.where(tnx_data['Price'] > tnx_data['TNX_SMA_50'], 'Up', 'Down')
+
+# Define candlestick patterns
+def hammer(data):
+    return (data['Close'] > data['Open']) & ((data['Close'] - data['Open']) < 0.3 * (data['High'] - data['Low'])) & \
+           ((data['Low'] < data['Open']) & (data['Low'] < data['Close'])) & ((data['High'] - data['Close']) <= 0.3 * (data['High'] - data['Low']))
+
+def hanging_man(data):
+    return (data['Close'] < data['Open']) & ((data['Open'] - data['Close']) < 0.3 * (data['High'] - data['Low'])) & \
+           ((data['Low'] < data['Open']) & (data['Low'] < data['Close'])) & ((data['High'] - data['Open']) <= 0.3 * (data['High'] - data['Low']))
+
+def bearish_engulfing(data):
+    return (data['Close'] < data['Open']) & (data['Close'] < data['Open'].shift(1)) & (data['Open'] > data['Close'].shift(1))
+
+def bullish_engulfing(data):
+    return (data['Close'] > data['Open']) & (data['Close'] > data['Open'].shift(1)) & (data['Open'] < data['Close'].shift(1))
+
+# Apply the candlestick patterns to the VNQ data
+vnq_data['Hammer'] = hammer(vnq_data)
+vnq_data['Hanging_Man'] = hanging_man(vnq_data)
+vnq_data['Bearish_Engulfing'] = bearish_engulfing(vnq_data)
+vnq_data['Bullish_Engulfing'] = bullish_engulfing(vnq_data)
+
+# Check VNQ performance after the pattern
+vnq_data['VNQ_Performance'] = vnq_data['Close'].pct_change().shift(-1)
+vnq_data['VNQ_Actual'] = vnq_data['VNQ_Performance'] > 0  # True if positive performance, False otherwise
+
+# Align TNX data with VNQ by reindexing (ensure no MultiIndex issues)
+tnx_data = tnx_data.reset_index()  # Reset any MultiIndex first
+tnx_data.set_index('Date', inplace=True)  # Ensure proper index
+tnx_data = tnx_data.reindex(vnq_data.index)
+
+# Merge VNQ and TNX data
+merged_data = vnq_data[['Hammer', 'Hanging_Man', 'Bearish_Engulfing', 'Bullish_Engulfing', 'VNQ_Actual']].copy()
+merged_data = merged_data.reindex(tnx_data.index)  # Ensure alignment
+merged_data['TNX_Trend'] = tnx_data['TNX_Trend']
+
+# Reshape the data to analyze candlestick pattern predictions
+pattern_list = ['Hammer', 'Hanging_Man', 'Bearish_Engulfing', 'Bullish_Engulfing']
+records = []
+
+for pattern in pattern_list:
+    pattern_data = merged_data[merged_data[pattern] == True].copy()
+    pattern_data['Pattern'] = pattern
+    pattern_data['VNQ_Prediction'] = pattern_data['VNQ_Actual'].shift(-1)  # Shift to simulate prediction
+    records.append(pattern_data[['Pattern', 'TNX_Trend', 'VNQ_Prediction', 'VNQ_Actual']])
+
+# Concatenate all pattern occurrences
+results_df = pd.concat(records).dropna().reset_index(drop=True)
+
+# Fix grouping issues (Ensure there are no MultiIndexes)
+results_df = results_df.reset_index(drop=True)
+
+# Compute percentages for reliability
+reliability = results_df.groupby(['Pattern', 'TNX_Trend'])['VNQ_Prediction'].apply(
+    lambda x: (x == results_df.loc[x.index, 'VNQ_Actual']).mean() * 100
+)
+
+reliability = reliability.unstack().fillna(0).round(2)
+
+# Calculate overall accuracy for each pattern
+total_counts = results_df.groupby('Pattern').size()
+correct_counts = results_df[results_df['VNQ_Prediction'] == results_df['VNQ_Actual']].groupby('Pattern').size()
+overall_accuracy = (correct_counts / total_counts * 100).fillna(0).round(2)
+
+# Combine reliability with overall accuracy
+final_results = reliability.copy()
+final_results['Overall Accuracy %'] = overall_accuracy
+
+# Display results
+print("Candlestick Pattern Reliability with Interest Rate Trends")
+print(final_results)
+
+# Plot the results
+final_results.plot(kind='bar', figsize=(12, 6), title="Candlestick Pattern Accuracy by Interest Rate Trend")
+plt.xlabel("Pattern and TNX Trend")
+plt.ylabel("Accuracy (%)")
+plt.legend(title="TNX Trend")
+plt.xticks(rotation=45, ha="right")
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.show()
